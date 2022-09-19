@@ -490,7 +490,7 @@ module aptos_token::token {
         property_map::update_property_map(value, keys, values, types);
     }
 
-    // Update token uri if mutable
+    // Update token uri if mutable, it does not change the version number.
     public entry fun update_token_uri(
         account: &signer,
         token_id: TokenId,
