@@ -200,7 +200,6 @@ module aptos_token::token {
         withdraw_events: EventHandle<WithdrawEvent>,
         burn_events: EventHandle<BurnTokenEvent>,
         mutate_token_property_events: EventHandle<MutateTokenPropertyMapEvent>,
-        mutate_token_uri_events: EventHandle<MutateTokenUriEvent>
     }
 
     /// This config specifies which fields in the Collection are mutable
@@ -293,13 +292,6 @@ module aptos_token::token {
         keys: vector<String>,
         values: vector<vector<u8>>,
         types: vector<String>,
-    }
-
-    ///
-    struct MutateTokenUriEvent has drop, store {
-        old_uri: String,
-        new_uri: String,
-        token_id: TokenId
     }
 
     /// create collection event with creator address and collection name
@@ -501,31 +493,16 @@ module aptos_token::token {
     // Update token uri if mutable
     public entry fun update_token_uri(
         account: &signer,
-        creator_address: address,
         token_id: TokenId,
         new_uri: String
-    ) acquires Collections, TokenStore {
+    ) acquires Collections {
 
-        assert!(signer::address_of(account) == creator_address, error::not_found(ENO_MUTATE_CAPABILITY));
-        assert!(exists<Collections>(creator_address), error::not_found(ECOLLECTIONS_NOT_PUBLISHED));
-        let all_token_data: &mut Table<TokenDataId, TokenData> = &mut borrow_global_mut<Collections>(creator_address).token_data;
+        assert!(exists<Collections>(signer::address_of(account)), error::not_found(ECOLLECTIONS_NOT_PUBLISHED));
+        let all_token_data: &mut Table<TokenDataId, TokenData> = &mut borrow_global_mut<Collections>(signer::address_of(account)).token_data;
         assert!(table::contains(all_token_data, token_id.token_data_id), error::not_found(ETOKEN_DATA_NOT_PUBLISHED));
         let token_data: &mut TokenData = table::borrow_mut(all_token_data, token_id.token_data_id);
-
         assert!(token_data.mutability_config.uri, error::permission_denied(EFIELD_NOT_MUTABLE));
-
-        let old_uri = token_data.uri;
         token_data.uri = new_uri;
-
-        event::emit_event<MutateTokenUriEvent>(
-            &mut borrow_global_mut<TokenStore>(signer::address_of(account)).mutate_token_uri_events,
-            MutateTokenUriEvent {
-                old_uri,
-                new_uri,
-                token_id
-            },
-        );
-
     }
 
     /// Deposit the token balance into the owner's account and emit an event.
@@ -603,7 +580,6 @@ module aptos_token::token {
                     withdraw_events: account::new_event_handle<WithdrawEvent>(account),
                     burn_events: account::new_event_handle<BurnTokenEvent>(account),
                     mutate_token_property_events: account::new_event_handle<MutateTokenPropertyMapEvent>(account),
-                    mutate_token_uri_events: account::new_event_handle<MutateTokenUriEvent>(account)
                 },
             );
         }
@@ -902,7 +878,7 @@ module aptos_token::token {
     }
 
     /// return the number of distinct token_id created under this collection
-    public fun get_token_uri(creator_address: address, token_data_id: TokenDataId): String acquires Collections {
+    public fun get_token_data_uri(creator_address: address, token_data_id: TokenDataId): String acquires Collections {
         assert!(exists<Collections>(creator_address), error::not_found(ECOLLECTIONS_NOT_PUBLISHED));
         let all_token_data = &borrow_global<Collections>(creator_address).token_data;
         assert!(table::contains(all_token_data, token_data_id), error::not_found(ETOKEN_DATA_NOT_PUBLISHED));
@@ -1331,6 +1307,50 @@ module aptos_token::token {
         create_token_id_raw(signer::address_of(creator), get_collection_name(), get_token_name(), 0)
     }
 
+    #[test_only]
+    public entry fun create_collection_and_token_immutable(
+        creator: &signer,
+        amount: u64,
+        collection_max: u64,
+        token_max: u64
+    ): TokenId acquires Collections, TokenStore {
+        use std::string;
+        use std::bcs;
+        let mutate_setting = vector<bool>[false, false, false];
+
+        create_collection(
+            creator,
+            get_collection_name(),
+            string::utf8(b"Collection: Hello, World"),
+            string::utf8(b"https://aptos.dev"),
+            collection_max,
+            mutate_setting
+        );
+
+        let default_keys = vector<String>[string::utf8(b"attack"), string::utf8(b"num_of_use")];
+        let default_vals = vector<vector<u8>>[bcs::to_bytes<u64>(&10), bcs::to_bytes<u64>(&5)];
+        let default_types = vector<String>[string::utf8(b"u64"), string::utf8(b"u64")];
+        let mutate_setting = vector<bool>[false, false, false, false, false];
+
+        create_token_script(
+            creator,
+            get_collection_name(),
+            get_token_name(),
+            string::utf8(b"Hello, Token"),
+            amount,
+            token_max,
+            string::utf8(b"https://aptos.dev"),
+            signer::address_of(creator),
+            100,
+            0,
+            mutate_setting,
+            default_keys,
+            default_vals,
+            default_types,
+        );
+        create_token_id_raw(signer::address_of(creator), get_collection_name(), get_token_name(), 0)
+    }
+
     #[test(creator = @0xFF)]
     fun test_create_events_generation(creator: signer) acquires Collections, TokenStore {
         account::create_account_for_test(signer::address_of(&creator));
@@ -1428,34 +1448,6 @@ module aptos_token::token {
     }
 
     #[test(creator = @0xAF, owner = @0xBB)]
-    fun test_mutate_token_uri(creator: &signer, owner: &signer) acquires Collections, TokenStore {
-        account::create_account_for_test(signer::address_of(creator));
-        account::create_account_for_test(signer::address_of(owner));
-
-        // token owner mutate the token property
-        let token_id = create_collection_and_token(creator, 1, 1, 1);
-        assert!(token_id.property_version == 0, 1);
-
-        update_token_uri(
-            creator,
-            signer::address_of(creator),
-            token_id,
-            string::utf8(b"https://revealed.io")
-        );
-
-        // let creator_props = &borrow_global<TokenStore>(signer::address_of(creator)).tokens;
-        // let token = table::borrow(creator_props, new_id_1);
-
-        let uri = get_token_uri(signer::address_of(creator), token_id.token_data_id);
-        assert!(uri == string::utf8(b"https://revealed.io"), 999);
-
-        // // transfer token with property_version > 0 also transfer the token properties
-        // initialize_token_store(owner);
-        // opt_in_direct_transfer(owner, true);
-        // transfer(creator, token_id, signer::address_of(owner), 1);
-    }
-
-    #[test(creator = @0xAF, owner = @0xBB)]
     #[expected_failure(abort_code = 393219)]
     fun test_mutate_token_property_fail(creator: &signer) acquires Collections, TokenStore {
         use std::bcs;
@@ -1487,6 +1479,45 @@ module aptos_token::token {
             new_vals,
             new_types,
         );
+    }
+
+    #[test(creator = @0xAF, owner = @0xBB)]
+    fun test_mutate_token_uri(creator: &signer, owner: &signer) acquires Collections, TokenStore {
+        account::create_account_for_test(signer::address_of(creator));
+        account::create_account_for_test(signer::address_of(owner));
+
+        // token owner mutate the token property
+        let token_id = create_collection_and_token(creator, 1, 1, 1);
+        assert!(token_id.property_version == 0, 1);
+
+        update_token_uri(
+            creator,
+            token_id,
+            string::utf8(b"https://revealed.io")
+        );
+
+        let uri = get_token_data_uri(signer::address_of(creator), token_id.token_data_id);
+        assert!(uri == string::utf8(b"https://revealed.io"), 999);
+    }
+
+    #[test(creator = @0xAF, owner = @0xBB)]
+    #[expected_failure(abort_code = 327693)]
+    fun test_mutate_token_uri_fail(creator: &signer, owner: &signer) acquires Collections, TokenStore {
+        account::create_account_for_test(signer::address_of(creator));
+        account::create_account_for_test(signer::address_of(owner));
+
+        // token owner mutate the token property
+        let token_id = create_collection_and_token_immutable(creator, 1, 1, 1);
+        assert!(token_id.property_version == 0, 1);
+
+        update_token_uri(
+            creator,
+            token_id,
+            string::utf8(b"https://revealed.io")
+        );
+
+        let uri = get_token_data_uri(signer::address_of(creator), token_id.token_data_id);
+        assert!(uri == string::utf8(b"https://revealed.io"), 999);
     }
 
     #[test(creator = @0xAF, owner = @0xBB)]
